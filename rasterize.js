@@ -67,6 +67,7 @@ const ENEMY_FALL_FREQUENCY = 2, ENEMY_FALL_FREQUENCY_RANGE = 2;
 
 // Size and rectangularity of player and enemy bullets.
 const BULLET_SCALE = 0.01, BULLET_TALLNESS = 2;
+const LASER_SCALE = 0.001, LASER_TALLNESS = 10000;
 
 const ENEMY_BULLET_SPEED = 0.02, ENEMY_BULLET_BOTTOM_BOUND = -1;
 const ENEMY_LASER_DURATION = 100;
@@ -104,7 +105,7 @@ const cubeVertices = [
     [-1, -1, -1],
 ];
 const rectangleVertices = cubeVertices.map((vertex) => [vertex[0], vertex[1] * BULLET_TALLNESS, vertex[2]]);
-const laserVertices = cubeVertices.map((vertex) => [vertex[0], (vertex[1] + 1) * 1000, vertex[2]]);
+const laserVertices = cubeVertices.map((vertex) => [vertex[0], (vertex[1] + 1) * LASER_TALLNESS, vertex[2]]);
 const cuboidTriangles = [
     [0, 1, 5],
     [5, 4, 0],
@@ -189,7 +190,7 @@ function makeGameObjects() {
             vertices: laserVertices.map((vertex) => {
                 const newVertex = [...vertex];
                 // Scale laser
-                vec3.scale(newVertex, newVertex, BULLET_SCALE);
+                vec3.scale(newVertex, newVertex, LASER_SCALE);
                 return newVertex;
             }),
             isEnemyLaser: true,
@@ -217,7 +218,7 @@ function makeGameObjects() {
         vertices: laserVertices.map((vertex) => {
             const newVertex = [...vertex];
             // Scale laser
-            vec3.scale(newVertex, newVertex, BULLET_SCALE);
+            vec3.scale(newVertex, newVertex, LASER_SCALE);
             return newVertex;
         }),
         isPlayerLaser: true,
