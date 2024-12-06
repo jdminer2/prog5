@@ -1,8 +1,6 @@
 /* GLOBAL CONSTANTS AND VARIABLES */
 
 /* assignment specific globals */
-const INPUT_TRIANGLES_URL = "https://ncsucgclass.github.io/prog4/triangles.json"; // triangles file loc
-const INPUT_ELLIPSOIDS_URL = "https://ncsucgclass.github.io/prog4/ellipsoids.json"; // ellipsoids file loc
 var defaultEye = vec3.fromValues(0.5,0.5,-0.5); // default eye position in world space
 var defaultCenter = vec3.fromValues(0.5,0.5,0.5); // default view direction in world space
 var defaultUp = vec3.fromValues(0,1,0); // default view up vector
@@ -16,11 +14,8 @@ var rotateTheta = Math.PI/50; // how much to rotate models by with each key pres
 var gl = null; // the all powerful gl object. It's all here folks!
 var inputTriangles = []; // the triangle data as loaded from input files
 var numTriangleSets = 0; // how many triangle sets in input scene
-var inputEllipsoids = []; // the ellipsoid data as loaded from input files
-var numEllipsoids = 0; // how many ellipsoids in the input scene
 var vertexBuffers = []; // this contains vertex coordinate lists by set, in triples
 var normalBuffers = []; // this contains normal component lists by set, in triples
-var uvPosBuffers = []; // this contains texture coordinate lists by set, in doubles
 var triSetSizes = []; // this contains the size of each triangle set
 var triangleBuffers = []; // lists of indices into vertexBuffers by set, in triples
 var viewDelta = 0; // how much to displace view with each key press
@@ -28,7 +23,6 @@ var viewDelta = 0; // how much to displace view with each key press
 /* shader parameter locations */
 var vPosAttribLoc; // where to put position for vertex shader
 var vNormAttribLoc; // where to put norm for vertex shader
-var vUVPosAttribLoc; // where to put texture position for shader
 var mMatrixULoc; // where to put model matrix for vertex shader
 var pvmMatrixULoc; // where to put project model view matrix for vertex shader
 var ambientULoc; // where to put ambient reflecivity for fragment shader
@@ -36,230 +30,490 @@ var diffuseULoc; // where to put diffuse reflecivity for fragment shader
 var specularULoc; // where to put specular reflecivity for fragment shader
 var shininessULoc; // where to put specular exponent for fragment shader
 var alphaULoc; // where to put alpha for fragment shader
-var samplerULoc; // where to put sampler for fragment shader
-var blendingModeULoc; // where to put blending mode for fragment shader
 
 /* interaction variables */
 var Eye = vec3.clone(defaultEye); // eye position in world space
 var Center = vec3.clone(defaultCenter); // view direction in world space
 var Up = vec3.clone(defaultUp); // view up vector in world space
 
-var blendingMode = 0;
-var floatAway = false;
-var floatTime = 0;
-const MAX_BLENDING_MODE = 2;
+const ENEMY_COLS = 12;
+const ENEMY_ROWS = 3;
 
-// ASSIGNMENT HELPER FUNCTIONS
+// Starting position of the center of the enemies group,
+const ENEMY_SCALE = 0.05, ENEMIES_CENTER_START = [0.5, 1.55, 0.95];
+const PLAYER_SCALE = 0.07, PLAYER_START = [0.5, -0.6, 0.95];
 
-// get the JSON file from the passed URL
-function getJSONFile(url,descr) {
-    try {
-        if ((typeof(url) !== "string") || (typeof(descr) !== "string"))
-            throw "getJSONFile: parameter not a string";
-        else {
-            var httpReq = new XMLHttpRequest(); // a new http request
-            httpReq.open("GET",url,false); // init the request
-            httpReq.send(null); // send the request
-            var startTime = Date.now();
-            while ((httpReq.status !== 200) && (httpReq.readyState !== XMLHttpRequest.DONE)) {
-                if ((Date.now()-startTime) > 3000)
-                    break;
-            } // until its loaded or we time out after three seconds
-            if ((httpReq.status !== 200) || (httpReq.readyState !== XMLHttpRequest.DONE))
-                throw "Unable to open "+descr+" file!";
-            else
-                return JSON.parse(httpReq.response); 
-        } // end if good params
-    } // end try    
+// Side bounds are plus or minus.
+const ENEMY_BACKFORTH_SPEED = 0.001, ENEMY_SIDE_BOUNDS = 0.4;
+// Movement of the enemies group.
+let enemiesMovingLeft = false;
+let enemiesBackforthPosition = 0;
+
+const PLAYER_SPEED = 0.005, PLAYER_SIDE_BOUNDS = 1.3;
+var playerMovingLeft = false;
+var playerMovingRight = false;
+// If a player just pressed spacebar.
+var playerMakeBullet = false;
+
+// These variables give the average, and the evenly distributed random range around it.
+// Time between enemies falling. 
+const ENEMY_ATTACK_WAIT = 500, ENEMY_ATTACK_WAIT_RANGE = 500;
+// enemyAttackTime is the current countdown to the next enemy falling.
+let enemyAttackTime = ENEMY_ATTACK_WAIT + (Math.random() - 0.5) * ENEMY_ATTACK_WAIT_RANGE;
+
+const ENEMY_FALL_SPEED = 0.005, ENEMY_BOTTOM_BOUND = -3;
+// Amplitude of horizontal wobbling.
+const ENEMY_FALL_AMPLITUDE = 0.3, ENEMY_FALL_AMPLITUDE_RANGE = 0.3;
+// Frequency of horizontal wobbling. This is also multiplied by fall speed.
+const ENEMY_FALL_FREQUENCY = 2, ENEMY_FALL_FREQUENCY_RANGE = 2;
+
+// Size and rectangularity of player and enemy bullets.
+const BULLET_SCALE = 0.01, BULLET_TALLNESS = 2;
+
+const ENEMY_BULLET_SPEED = 0.02, ENEMY_BULLET_BOTTOM_BOUND = -1;
+const ENEMY_LASER_DURATION = 100;
+// How many bullet objects are available, invisible and intangible, to be teleported into place and used.
+const ENEMY_BULLET_MAX_COUNT = 10;
+// How many shots a single enemy is allowed to make, and how long it has to wait between shots.
+const MAX_ENEMY_SHOTS = 3, ENEMY_SHOT_COOLDOWN = 100;
+
+const PLAYER_BULLET_SPEED = 0.02, PLAYER_BULLET_TOP_BOUND = 2;
+const PLAYER_LASER_DURATION = 100;
+
+const basicMaterial = {
+    alpha: 1,
+    ambient: [0.1, 0.1, 0.1],
+    diffuse: [0, 0, 0],
+    n: 11,
+    specular: [0.3, 0.3, 0.3],
+}
+const enemyMaterialA = {
+    ...basicMaterial,
+    ambient: [0.1, 0.1, 0.1],
+}
+const enemyMaterialB = {
+    ...basicMaterial,
+    ambient: [0.5, 0.5, 0.5],
+}
+const cubeVertices = [
+    [1, 1, 1],
+    [1, 1, -1],
+    [1, -1, 1],
+    [1, -1, -1],
+    [-1, 1, 1],
+    [-1, 1, -1],
+    [-1, -1, 1],
+    [-1, -1, -1],
+];
+const rectangleVertices = cubeVertices.map((vertex) => [vertex[0], vertex[1] * BULLET_TALLNESS, vertex[2]]);
+const laserVertices = cubeVertices.map((vertex) => [vertex[0], (vertex[1] + 1) * 1000, vertex[2]]);
+const cuboidTriangles = [
+    [0, 1, 5],
+    [5, 4, 0],
+    [0, 2, 3],
+    [3, 1, 0],
+    [0, 4, 6],
+    [6, 2, 0],
+    [1, 3, 7],
+    [7, 5, 1],
+    [2, 6, 7],
+    [7, 3, 2],
+    [4, 5, 7],
+    [7, 6, 4],
+];
+
+function makeGameObjects() {
     
-    catch(e) {
-        console.log(e);
-        return(String.null);
+    // Make enemies
+    for(let x = 0; x < ENEMY_COLS; x++)
+        for(let y = 0; y < ENEMY_ROWS; y++) {
+            // Make the rectangular grid
+            const enemyOffset = [
+                ENEMIES_CENTER_START[0] + ENEMY_SCALE*3 * (x - (ENEMY_COLS-1)/2),
+                ENEMIES_CENTER_START[1] + ENEMY_SCALE*3 * (y - (ENEMY_ROWS-1)/2),
+                ENEMIES_CENTER_START[2],
+            ];
+            inputTriangles.push({
+                // Checkerboard of colors.
+                material: (x + y) % 2 ? enemyMaterialA : enemyMaterialB,
+                normals: cubeVertices,
+                triangles: cuboidTriangles,
+                vertices: cubeVertices.map((vertex) => {
+                    const newVertex = [...vertex];
+                    // Scale enemy
+                    vec3.scale(newVertex, newVertex, ENEMY_SCALE);
+                    // Translate enemy to starting position
+                    vec3.add(newVertex, newVertex, enemyOffset);
+                    return newVertex;
+                }),
+                isEnemy: true,
+                offset: enemyOffset,
+                shotsFired: 0,
+                shotCooldown: 0,
+            });
+        }
+    
+    // Make player
+    inputTriangles.push({
+        material: {...basicMaterial, diffuse: [0, 0, 1]},
+        normals: [...cubeVertices],
+        triangles: [...cuboidTriangles],
+        vertices: cubeVertices.map((vertex) => {
+            const newVertex = [...vertex];
+            // Scale player
+            vec3.scale(newVertex, newVertex, PLAYER_SCALE);
+            // Translate player to start position
+            vec3.add(newVertex, newVertex, PLAYER_START);
+            return newVertex;
+        }),
+        isPlayer: true,
+    });
+    
+    for(let i = 0; i < ENEMY_BULLET_MAX_COUNT; i++) {
+        // Make enemy bullets
+        inputTriangles.push({
+            material: {...basicMaterial, diffuse: [1, .7, 0], alpha: 0},
+            normals: [...rectangleVertices],
+            triangles: [...cuboidTriangles],
+            vertices: rectangleVertices.map((vertex) => {
+                const newVertex = [...vertex];
+                // Scale bullet
+                vec3.scale(newVertex, newVertex, BULLET_SCALE);
+                return newVertex;
+            }),
+            isEnemyBullet: true,
+        });
+        // Make enemy lasers
+        inputTriangles.push({
+            material: {...basicMaterial, ambient: [1, .1, 0], alpha: 0},
+            normals: [...laserVertices],
+            triangles: [...cuboidTriangles],
+            vertices: laserVertices.map((vertex) => {
+                const newVertex = [...vertex];
+                // Scale laser
+                vec3.scale(newVertex, newVertex, BULLET_SCALE);
+                return newVertex;
+            }),
+            isEnemyLaser: true,
+        });
     }
-} // end get input json file
+    
+    // Make player bullet
+    inputTriangles.push({
+        material: {...basicMaterial, diffuse: [1, .7, 0], alpha: 0},
+        normals: [...rectangleVertices],
+        triangles: [...cuboidTriangles],
+        vertices: rectangleVertices.map((vertex) => {
+            const newVertex = [...vertex];
+            // Scale bullet
+            vec3.scale(newVertex, newVertex, BULLET_SCALE);
+            return newVertex;
+        }),
+        isPlayerBullet: true,
+    });
+    // Make player laser
+    inputTriangles.push({
+        material: {...basicMaterial, ambient: [1, 0.1, 0], alpha: 0},
+        normals: [...laserVertices],
+        triangles: [...cuboidTriangles],
+        vertices: laserVertices.map((vertex) => {
+            const newVertex = [...vertex];
+            // Scale laser
+            vec3.scale(newVertex, newVertex, BULLET_SCALE);
+            return newVertex;
+        }),
+        isPlayerLaser: true,
+    });
+}
+
+function moveGameObjects() {
+    const player = inputTriangles.find((triangleSet) => triangleSet.isPlayer);
+    const playerBullet = inputTriangles.find((triangleSet) => triangleSet.isPlayerBullet);
+    const enemies = inputTriangles.filter((triangleSet) => triangleSet.isEnemy);
+    const fallingEnemies = inputTriangles.filter((triangleSet) => triangleSet.isFallingEnemy);
+    const enemyBullets = inputTriangles.filter((triangleSet) => triangleSet.isEnemyBullet);
+    
+    // Enemy backforth movement
+    let swapDirection = false;
+    if(enemiesMovingLeft) {
+        enemiesBackforthPosition += ENEMY_BACKFORTH_SPEED;
+        if(enemiesBackforthPosition >= ENEMY_SIDE_BOUNDS)
+            swapDirection = true;
+    } else {
+        enemiesBackforthPosition -= ENEMY_BACKFORTH_SPEED;
+        if(enemiesBackforthPosition <= -ENEMY_SIDE_BOUNDS)
+            swapDirection = true;
+    }
+    enemies.forEach((enemy) => enemy.translation[0] = enemiesBackforthPosition);
+    if(swapDirection) {
+        enemiesMovingLeft = !enemiesMovingLeft;
+        // Swap colors
+        const temp = enemyMaterialA.ambient;
+        enemyMaterialA.ambient = enemyMaterialB.ambient;
+        enemyMaterialB.ambient = temp;
+    }
+    
+    // Enemy starting an attack
+    enemyAttackTime--;
+    if(enemyAttackTime <= 0) {
+        enemyAttackTime = ENEMY_ATTACK_WAIT + (Math.random() - 0.5) * ENEMY_ATTACK_WAIT_RANGE;
+        if(enemies.length > 0) {
+            const selectedEnemy = enemies[Math.floor(Math.random() * enemies.length)];
+            selectedEnemy.isEnemy = false;
+            selectedEnemy.isFallingEnemy = true;
+            selectedEnemy.material = {...selectedEnemy.material, ambient: [0.3, 0.1, 0.1]};
+            selectedEnemy.amplitude = ENEMY_FALL_AMPLITUDE + (Math.random() - 0.5) * ENEMY_FALL_AMPLITUDE_RANGE;
+            selectedEnemy.frequency = ENEMY_FALL_FREQUENCY + (Math.random() - 0.5) * ENEMY_FALL_FREQUENCY_RANGE;
+            selectedEnemy.phase = Math.random() * Math.PI * 2;
+        }
+    }
+
+    fallingEnemies.forEach((enemy) => {
+        
+        // Flying enemy movement
+        let horizontalMovement = 0;
+        horizontalMovement -= Math.sin(enemy.translation[1] * enemy.frequency + enemy.phase) * enemy.amplitude;
+        enemy.translation[1] -= ENEMY_FALL_SPEED;
+        horizontalMovement += Math.sin(enemy.translation[1] * enemy.frequency + enemy.phase) * enemy.amplitude;
+        enemy.translation[0] += horizontalMovement;
+        
+        // Deleting flying enemy when it goes down too far
+        if(enemy.translation[1] <= ENEMY_BOTTOM_BOUND) {
+            enemy.isFallingEnemy = false;
+            enemy.material = {...enemy.material, alpha: 0};
+        }
+        
+        // Flying enemy firing bullets
+        if(enemy.offset[1] + enemy.translation[1] <= ENEMIES_CENTER_START[1] - ENEMY_SCALE*3 * (ENEMY_ROWS+1)/2) {
+            enemy.shotCooldown--;
+            if(enemy.shotCooldown < 0 && enemy.shotsFired < MAX_ENEMY_SHOTS) {
+                const enemyBullet = enemyBullets.find((bullet) => !bullet.isFlying);
+                if(enemyBullet) {
+                    enemyBullet.isFlying = true;
+                    enemyBullet.material.alpha = 1;
+                    enemyBullet.translation = [...enemy.translation]
+                    vec3.add(enemyBullet.translation, enemyBullet.translation, enemy.offset);
+                    if(enemyBullet.isEnemyLaser) {
+                        // Rotate laser to correct angle
+                        vec3.normalize(enemyBullet.yAxis, [horizontalMovement, -ENEMY_FALL_SPEED, 0]);
+                        enemyBullet.xAxis = [enemyBullet.yAxis[1], -enemyBullet.yAxis[0], 0];
+                        enemyBullet.center = [0,0,0];
+                        enemyBullet.laserCountdown = ENEMY_LASER_DURATION;
+
+                        // Enemy laser and player collision detection
+                        if(player) {
+                            // It doesn't matter if left and right are backwards.
+                            const playerLeftX = PLAYER_START[0] + player.translation[0] + PLAYER_SCALE;
+                            const playerRightX = PLAYER_START[0] + player.translation[0] - PLAYER_SCALE;
+                            const playerTopY = PLAYER_START[1] + player.translation[1] + PLAYER_SCALE;
+                            const playerBotY = PLAYER_START[1] + player.translation[1] - PLAYER_SCALE;
+                            const topLaserX = enemyBullet.translation[0] + (playerTopY - enemyBullet.translation[1]) / ENEMY_FALL_SPEED * horizontalMovement;
+                            const botLaserX = enemyBullet.translation[0] + (playerBotY - enemyBullet.translation[1]) / ENEMY_FALL_SPEED * horizontalMovement;
+                            let hit = false;
+                            if(topLaserX >= playerRightX && topLaserX <= playerLeftX)
+                                hit = true;
+                            else if(botLaserX >= playerRightX && botLaserX <= playerLeftX)
+                                hit = true;
+                            else if((topLaserX >= playerRightX) != (botLaserX >= playerRightX))
+                                hit = true;
+                            if(hit) {
+                                player.isPlayer = false;
+                                player.material = {...player.material, alpha: 0};
+                                // Does not delete the laser.
+                            }
+                        }
+                    } else {
+                        // Give bullet correct horizontal movement speed
+                        enemyBullet.horizontalMovement = -horizontalMovement;
+                    }
+                    enemy.shotsFired++;
+                    enemy.shotCooldown = ENEMY_SHOT_COOLDOWN;
+                }
+            }
+        }
+    });
+
+    if(player) {
+        
+        // Player movement
+        if(playerMovingLeft)
+            player.translation[0] = Math.min(player.translation[0] + PLAYER_SPEED, PLAYER_SIDE_BOUNDS);
+        if(playerMovingRight)
+            player.translation[0] = Math.max(player.translation[0] - PLAYER_SPEED, -PLAYER_SIDE_BOUNDS);
+        
+        // Player firing bullets
+        if(playerMakeBullet) {
+            playerMakeBullet = false;
+            if(!playerBullet.isFlying) {
+                playerBullet.isFlying = true;
+                playerBullet.material.alpha = 1;
+                playerBullet.translation = [...player.translation];
+                vec3.add(playerBullet.translation, playerBullet.translation, PLAYER_START);
+
+                // Player laser and enemy collision detection
+                if(playerBullet.isPlayerLaser) {
+                    enemies.concat(fallingEnemies).forEach((target) => {
+                        if(
+                            Math.abs(
+                                (target.offset[0] + target.translation[0]) -
+                                (PLAYER_START[0] + player.translation[0])
+                            ) <= ENEMY_SCALE
+                        ) {
+                            target.isEnemy = false;
+                            target.isFallingEnemy = false;
+                            target.material = {...target.material, alpha: 0};
+                            // Does not delete the laser.
+                        }
+                    });
+                    playerBullet.laserCountdown = PLAYER_LASER_DURATION;
+                }
+            }
+        }
+        
+        // Player and enemy collision detection
+        fallingEnemies.forEach((enemy) => {
+            if([0,1,2].every((dim) =>
+                Math.abs(
+                    (enemy.offset[dim] + enemy.translation[dim]) -
+                    (PLAYER_START[dim] + player.translation[dim])
+                ) <= PLAYER_SCALE + ENEMY_SCALE
+            )) {
+                player.isPlayer = false;
+                player.material = {...player.material, alpha: 0};
+                enemy.isFallingEnemy = false;
+                enemy.material = {...enemy.material, alpha: 0};
+            }
+        });
+    }
+
+    if(playerBullet.isFlying) {
+        if(playerBullet.isPlayerLaser) {
+            // Deleting player laser after a short time.
+            if(--playerBullet.laserCountdown <= 0) {
+                playerBullet.isFlying = false;
+                playerBullet.material = {...playerBullet.material, alpha: 0};
+            }
+        } else {
+            // Player bullet movement
+            playerBullet.translation[1] += PLAYER_BULLET_SPEED;
+    
+            // Deleting player bullet when it goes up too far
+            if(playerBullet.translation[1] >= PLAYER_BULLET_TOP_BOUND) {
+                playerBullet.isFlying = false;
+                playerBullet.material = {...playerBullet.material, alpha: 0};
+            }
+            
+            // Player bullet and enemy collision detection
+            enemies.concat(fallingEnemies).forEach((target) => {
+                if([0,1,2].every((dim) =>
+                    Math.abs(
+                        (target.offset[dim] + target.translation[dim]) -
+                        playerBullet.translation[dim]
+                    ) <= BULLET_SCALE * (dim == 1 ? BULLET_TALLNESS : 1) + ENEMY_SCALE
+                )) {
+                    target.isEnemy = false;
+                    target.isFallingEnemy = false;
+                    target.material = {...target.material, alpha: 0};
+                    playerBullet.isFlying = false;
+                    playerBullet.material.alpha = 0;
+                }
+            });
+        }
+    }
+
+    enemyBullets.forEach((enemyBullet) => {
+        if(enemyBullet.isFlying) {
+            if(enemyBullet.isEnemyLaser) {
+                // Deleting enemy laser after a short time.
+                if(--enemyBullet.laserCountdown <= 0) {
+                    enemyBullet.isFlying = false;
+                    enemyBullet.material = {...enemyBullet.material, alpha: 0};
+                }
+            } else {
+                // Enemy bullet movement
+                enemyBullet.translation[0] += enemyBullet.horizontalMovement/ENEMY_FALL_SPEED*ENEMY_BULLET_SPEED;
+                enemyBullet.translation[1] -= ENEMY_BULLET_SPEED;
+                
+                // Deleting enemy bullet when it goes down too far
+                if(enemyBullet.translation[1] <= ENEMY_BULLET_BOTTOM_BOUND) {
+                    enemyBullet.isFlying = false;
+                    enemyBullet.material = {...enemyBullet.material, alpha: 0};
+                }
+                
+                // Enemy bullet and player collision detection
+                if(player && [0,1,2].every((dim) =>
+                    Math.abs(
+                        (PLAYER_START[dim] + player.translation[dim]) -
+                        enemyBullet.translation[dim]
+                    ) <= BULLET_SCALE * (dim == 1 ? BULLET_TALLNESS : 1) + PLAYER_SCALE
+                )) {
+                    player.isPlayer = false;
+                    player.material = {...player.material, alpha: 0};
+                    enemyBullet.isFlying = false;
+                    enemyBullet.material.alpha = 0;
+                }
+            }
+        }
+    });
+}
 
 // does stuff when keys are pressed
 function handleKeyDown(event) {
-    
-    const modelEnum = {TRIANGLES: "triangles", ELLIPSOID: "ellipsoid"}; // enumerated model type
-    const dirEnum = {NEGATIVE: -1, POSITIVE: 1}; // enumerated rotation direction
-    
-    function highlightModel(modelType,whichModel) {
-        if (handleKeyDown.modelOn != null)
-            handleKeyDown.modelOn.on = false;
-        handleKeyDown.whichOn = whichModel;
-        if (modelType == modelEnum.TRIANGLES)
-            handleKeyDown.modelOn = inputTriangles[whichModel]; 
-        else
-            handleKeyDown.modelOn = inputEllipsoids[whichModel]; 
-        handleKeyDown.modelOn.on = true; 
-    } // end highlight model
-    
-    function translateModel(offset) {
-        if (handleKeyDown.modelOn != null)
-            vec3.add(handleKeyDown.modelOn.translation,handleKeyDown.modelOn.translation,offset);
-    } // end translate model
-
-    function rotateModel(axis,direction) {
-        if (handleKeyDown.modelOn != null) {
-            var newRotation = mat4.create();
-
-            mat4.fromRotation(newRotation,direction*rotateTheta,axis); // get a rotation matrix around passed axis
-            vec3.transformMat4(handleKeyDown.modelOn.xAxis,handleKeyDown.modelOn.xAxis,newRotation); // rotate model x axis tip
-            vec3.transformMat4(handleKeyDown.modelOn.yAxis,handleKeyDown.modelOn.yAxis,newRotation); // rotate model y axis tip
-        } // end if there is a highlighted model
-    } // end rotate model
-    
-    // set up needed view params
-    var lookAt = vec3.create(), viewRight = vec3.create(), temp = vec3.create(); // lookat, right & temp vectors
-    lookAt = vec3.normalize(lookAt,vec3.subtract(temp,Center,Eye)); // get lookat vector
-    viewRight = vec3.normalize(viewRight,vec3.cross(temp,lookAt,Up)); // get view right vector
-    
-    // highlight static variables
-    handleKeyDown.whichOn = handleKeyDown.whichOn == undefined ? -1 : handleKeyDown.whichOn; // nothing selected initially
-    handleKeyDown.modelOn = handleKeyDown.modelOn == undefined ? null : handleKeyDown.modelOn; // nothing selected initially
-
     switch (event.code) {
-        
-        // model selection
-        case "Space": 
-            if (handleKeyDown.modelOn != null)
-                handleKeyDown.modelOn.on = false; // turn off highlighted model
-            handleKeyDown.modelOn = null; // no highlighted model
-            handleKeyDown.whichOn = -1; // nothing highlighted
-            break;
         case "ArrowRight": // select next triangle set
-            highlightModel(modelEnum.TRIANGLES,(handleKeyDown.whichOn+1) % numTriangleSets);
+            playerMovingRight = true;
+            event.preventDefault();
             break;
         case "ArrowLeft": // select previous triangle set
-            highlightModel(modelEnum.TRIANGLES,(handleKeyDown.whichOn > 0) ? handleKeyDown.whichOn-1 : numTriangleSets-1);
+            playerMovingLeft = true;
+            event.preventDefault();
             break;
-        case "ArrowUp": // select next ellipsoid
-            highlightModel(modelEnum.ELLIPSOID,(handleKeyDown.whichOn+1) % numEllipsoids);
-            break;
-        case "ArrowDown": // select previous ellipsoid
-            highlightModel(modelEnum.ELLIPSOID,(handleKeyDown.whichOn > 0) ? handleKeyDown.whichOn-1 : numEllipsoids-1);
-            break;
-            
-        // view change
-        case "KeyA": // translate view left, rotate left with shift
-            Center = vec3.add(Center,Center,vec3.scale(temp,viewRight,viewDelta));
-            if (!event.getModifierState("Shift"))
-                Eye = vec3.add(Eye,Eye,vec3.scale(temp,viewRight,viewDelta));
-            break;
-        case "KeyD": // translate view right, rotate right with shift
-            Center = vec3.add(Center,Center,vec3.scale(temp,viewRight,-viewDelta));
-            if (!event.getModifierState("Shift"))
-                Eye = vec3.add(Eye,Eye,vec3.scale(temp,viewRight,-viewDelta));
-            break;
-        case "KeyS": // translate view backward, rotate up with shift
-            if (event.getModifierState("Shift")) {
-                Center = vec3.add(Center,Center,vec3.scale(temp,Up,viewDelta));
-                Up = vec3.cross(Up,viewRight,vec3.subtract(lookAt,Center,Eye)); /* global side effect */
-            } else {
-                Eye = vec3.add(Eye,Eye,vec3.scale(temp,lookAt,-viewDelta));
-                Center = vec3.add(Center,Center,vec3.scale(temp,lookAt,-viewDelta));
-            } // end if shift not pressed
-            break;
-        case "KeyW": // translate view forward, rotate down with shift
-            if (event.getModifierState("Shift")) {
-                Center = vec3.add(Center,Center,vec3.scale(temp,Up,-viewDelta));
-                Up = vec3.cross(Up,viewRight,vec3.subtract(lookAt,Center,Eye)); /* global side effect */
-            } else {
-                Eye = vec3.add(Eye,Eye,vec3.scale(temp,lookAt,viewDelta));
-                Center = vec3.add(Center,Center,vec3.scale(temp,lookAt,viewDelta));
-            } // end if shift not pressed
-            break;
-        case "KeyQ": // translate view up, rotate counterclockwise with shift
-            if (event.getModifierState("Shift"))
-                Up = vec3.normalize(Up,vec3.add(Up,Up,vec3.scale(temp,viewRight,-viewDelta)));
-            else {
-                Eye = vec3.add(Eye,Eye,vec3.scale(temp,Up,viewDelta));
-                Center = vec3.add(Center,Center,vec3.scale(temp,Up,viewDelta));
-            } // end if shift not pressed
-            break;
-        case "KeyE": // translate view down, rotate clockwise with shift
-            if (event.getModifierState("Shift"))
-                Up = vec3.normalize(Up,vec3.add(Up,Up,vec3.scale(temp,viewRight,viewDelta)));
-            else {
-                Eye = vec3.add(Eye,Eye,vec3.scale(temp,Up,-viewDelta));
-                Center = vec3.add(Center,Center,vec3.scale(temp,Up,-viewDelta));
-            } // end if shift not pressed
-            break;
-        case "Escape": // reset view to default
-            Eye = vec3.copy(Eye,defaultEye);
-            Center = vec3.copy(Center,defaultCenter);
-            Up = vec3.copy(Up,defaultUp);
-            break;
-            
-        // model transformation
-        case "KeyK": // translate left, rotate left with shift
-            if (event.getModifierState("Shift"))
-                rotateModel(Up,dirEnum.NEGATIVE);
-            else
-                translateModel(vec3.scale(temp,viewRight,viewDelta));
-            break;
-        case "Semicolon": // translate right, rotate right with shift
-            if (event.getModifierState("Shift"))
-                rotateModel(Up,dirEnum.POSITIVE);
-            else
-                translateModel(vec3.scale(temp,viewRight,-viewDelta));
-            break;
-        case "KeyL": // translate backward, rotate up with shift
-            if (event.getModifierState("Shift"))
-                rotateModel(viewRight,dirEnum.POSITIVE);
-            else
-                translateModel(vec3.scale(temp,lookAt,-viewDelta));
-            break;
-        case "KeyO": // translate forward, rotate down with shift
-            if (event.getModifierState("Shift"))
-                rotateModel(viewRight,dirEnum.NEGATIVE);
-            else
-                translateModel(vec3.scale(temp,lookAt,viewDelta));
-            break;
-        case "KeyI": // translate up, rotate counterclockwise with shift 
-            if (event.getModifierState("Shift"))
-                rotateModel(lookAt,dirEnum.POSITIVE);
-            else
-                translateModel(vec3.scale(temp,Up,viewDelta));
-            break;
-        case "KeyP": // translate down, rotate clockwise with shift
-            if (event.getModifierState("Shift"))
-                rotateModel(lookAt,dirEnum.NEGATIVE);
-            else
-                translateModel(vec3.scale(temp,Up,-viewDelta));
-            break;
-        case "Backspace": // reset model transforms to default
-            for (var whichTriSet=0; whichTriSet<numTriangleSets; whichTriSet++) {
-                vec3.set(inputTriangles[whichTriSet].translation,0,0,0);
-                vec3.set(inputTriangles[whichTriSet].xAxis,1,0,0);
-                vec3.set(inputTriangles[whichTriSet].yAxis,0,1,0);
-            } // end for all triangle sets
-            for (var whichEllipsoid=0; whichEllipsoid<numEllipsoids; whichEllipsoid++) {
-                vec3.set(inputEllipsoids[whichEllipsoid].translation,0,0,0);
-                vec3.set(inputEllipsoids[whichTriSet].xAxis,1,0,0);
-                vec3.set(inputEllipsoids[whichTriSet].yAxis,0,1,0);
-            } // end for all ellipsoids
-            break;
-
-        case "KeyB":
-            blendingMode++;
-            if(blendingMode > MAX_BLENDING_MODE)
-                blendingMode = 0;
+        case "Space": 
+            playerMakeBullet = true;
+            event.preventDefault();
             break;
         case "Digit1":
-            if (event.getModifierState("Shift"))
-                floatAway = true;
+            if (event.getModifierState("Shift")) {
+                inputTriangles.forEach((triangleSet) => {
+                    if(triangleSet.isEnemyBullet) {
+                        triangleSet.isEnemyBullet = false;
+                        triangleSet.isFlying = false;
+                        triangleSet.material = {...triangleSet.material, alpha: 0};
+                    }
+                    if(triangleSet.isPlayerBullet) {
+                        triangleSet.isPlayerBullet = false;
+                        triangleSet.isFlying = false;
+                        triangleSet.material = {...triangleSet.material, alpha: 0};
+                    }
+                });
+                inputTriangles.forEach((triangleSet) => {
+                    if(triangleSet.isEnemyLaser)
+                        triangleSet.isEnemyBullet = true;
+                    if(triangleSet.isPlayerLaser)
+                        triangleSet.isPlayerBullet = true;
+                })
+            }
             break;
     } // end switch
 } // end handleKeyDown
+
+function handleKeyUp(event) {
+    switch (event.code) {
+        case "ArrowLeft":
+            playerMovingLeft = false;
+            break;
+        case "ArrowRight":
+            playerMovingRight = false;
+            break;
+    } // end switch
+} // end handleKeyUp
 
 // set up the webGL environment
 function setupWebGL() {
     
     // Set up keys
     document.onkeydown = handleKeyDown; // call this when key pressed
-
+    document.onkeyup = handleKeyUp;
 
     var imageCanvas = document.getElementById("myImageCanvas"); // create a 2d canvas
       var cw = imageCanvas.width, ch = imageCanvas.height; 
@@ -271,7 +525,6 @@ function setupWebGL() {
           var iw = bkgdImage.width, ih = bkgdImage.height;
           imageContext.drawImage(bkgdImage,0,0,iw,ih,0,0,cw,ch);   
      }
-
      
     // Get the canvas and context
     var canvas = document.getElementById("myWebGLCanvas"); // create a js canvas
@@ -296,96 +549,6 @@ function setupWebGL() {
 
 // read models in, load them into webgl buffers
 function loadModels() {
-    
-    // make an ellipsoid, with numLongSteps longitudes.
-    // start with a sphere of radius 1 at origin
-    // Returns verts, tris and normals.
-    function makeEllipsoid(currEllipsoid,numLongSteps) {
-        
-        try {
-            if (numLongSteps % 2 != 0)
-                throw "in makeSphere: uneven number of longitude steps!";
-            else if (numLongSteps < 4)
-                throw "in makeSphere: number of longitude steps too small!";
-            else { // good number longitude steps
-            
-                console.log("ellipsoid xyz: "+ ellipsoid.x +" "+ ellipsoid.y +" "+ ellipsoid.z);
-                
-                // make vertices
-                var ellipsoidVertices = [0,-1,0]; // vertices to return, init to south pole
-                var angleIncr = (Math.PI+Math.PI) / numLongSteps; // angular increment 
-                var latLimitAngle = angleIncr * (Math.floor(numLongSteps/4)-1); // start/end lat angle
-                var latRadius, latY; // radius and Y at current latitude
-                for (var latAngle=-latLimitAngle; latAngle<=latLimitAngle; latAngle+=angleIncr) {
-                    latRadius = Math.cos(latAngle); // radius of current latitude
-                    latY = Math.sin(latAngle); // height at current latitude
-                    for (var longAngle=0; longAngle<2*Math.PI; longAngle+=angleIncr) // for each long
-                        ellipsoidVertices.push(latRadius*Math.sin(longAngle),latY,latRadius*Math.cos(longAngle));
-                } // end for each latitude
-                ellipsoidVertices.push(0,1,0); // add north pole
-                ellipsoidVertices = ellipsoidVertices.map(function(val,idx) { // position and scale ellipsoid
-                    switch (idx % 3) {
-                        case 0: // x
-                            return(val*currEllipsoid.a+currEllipsoid.x);
-                        case 1: // y
-                            return(val*currEllipsoid.b+currEllipsoid.y);
-                        case 2: // z
-                            return(val*currEllipsoid.c+currEllipsoid.z);
-                    } // end switch
-                }); 
-
-                // make normals using the ellipsoid gradient equation
-                // resulting normals are unnormalized: we rely on shaders to normalize
-                var ellipsoidNormals = ellipsoidVertices.slice(); // start with a copy of the transformed verts
-                ellipsoidNormals = ellipsoidNormals.map(function(val,idx) { // calculate each normal
-                    switch (idx % 3) {
-                        case 0: // x
-                            return(2/(currEllipsoid.a*currEllipsoid.a) * (val-currEllipsoid.x));
-                        case 1: // y
-                            return(2/(currEllipsoid.b*currEllipsoid.b) * (val-currEllipsoid.y));
-                        case 2: // z
-                            return(2/(currEllipsoid.c*currEllipsoid.c) * (val-currEllipsoid.z));
-                    } // end switch
-                }); 
-
-                // Not sure the correct way to put a texture on an ellipsoid. Just doing something really incorrect here.
-                var ellipsoidUVPositions = [];
-                ellipsoidVertices.forEach((x,i) => {
-                    if(i % 3 != 2) {
-                        ellipsoidUVPositions.push(x % 1);
-                    }
-                });
-                
-                // make triangles, from south pole to middle latitudes to north pole
-                var ellipsoidTriangles = []; // triangles to return
-                for (var whichLong=1; whichLong<numLongSteps; whichLong++) // south pole
-                    ellipsoidTriangles.push(0,whichLong,whichLong+1);
-                ellipsoidTriangles.push(0,numLongSteps,1); // longitude wrap tri
-                var llVertex; // lower left vertex in the current quad
-                for (var whichLat=0; whichLat<(numLongSteps/2 - 2); whichLat++) { // middle lats
-                    for (var whichLong=0; whichLong<numLongSteps-1; whichLong++) {
-                        llVertex = whichLat*numLongSteps + whichLong + 1;
-                        ellipsoidTriangles.push(llVertex,llVertex+numLongSteps,llVertex+numLongSteps+1);
-                        ellipsoidTriangles.push(llVertex,llVertex+numLongSteps+1,llVertex+1);
-                    } // end for each longitude
-                    ellipsoidTriangles.push(llVertex+1,llVertex+numLongSteps+1,llVertex+2);
-                    ellipsoidTriangles.push(llVertex+1,llVertex+2,llVertex-numLongSteps+2);
-                } // end for each latitude
-                for (var whichLong=llVertex+2; whichLong<llVertex+numLongSteps+1; whichLong++) // north pole
-                    ellipsoidTriangles.push(whichLong,ellipsoidVertices.length/3-1,whichLong+1);
-                ellipsoidTriangles.push(ellipsoidVertices.length/3-2,ellipsoidVertices.length/3-1,
-                                        ellipsoidVertices.length/3-numLongSteps-1); // longitude wrap
-            } // end if good number longitude steps
-            return({vertices:ellipsoidVertices, normals:ellipsoidNormals, uvPositions: ellipsoidUVPositions, triangles:ellipsoidTriangles});
-        } // end try
-        
-        catch(e) {
-            console.log(e);
-        } // end catch
-    } // end make ellipsoid
-    
-    inputTriangles = getJSONFile(INPUT_TRIANGLES_URL,"triangles"); // read in the triangle data
-
     try {
         if (inputTriangles == String.null)
             throw "Unable to load triangles file!";
@@ -394,7 +557,6 @@ function loadModels() {
             var whichSetTri; // index of triangle in current triangle set
             var vtxToAdd; // vtx coords to add to the coord array
             var normToAdd; // vtx normal to add to the coord array
-            var uvPosToAdd; // vtx texture coords to add to the texture pos array
             var triToAdd; // tri indices to add to the index array
             var maxCorner = vec3.fromValues(Number.MIN_VALUE,Number.MIN_VALUE,Number.MIN_VALUE); // bbox corner
             var minCorner = vec3.fromValues(Number.MAX_VALUE,Number.MAX_VALUE,Number.MAX_VALUE); // other corner
@@ -413,15 +575,12 @@ function loadModels() {
                 // set up the vertex and normal arrays, define model center and axes
                 inputTriangles[whichSet].glVertices = []; // flat coord list for webgl
                 inputTriangles[whichSet].glNormals = []; // flat normal list for webgl
-                inputTriangles[whichSet].uvPositions = []; // flat texture pos list for webgl
                 var numVerts = inputTriangles[whichSet].vertices.length; // num vertices in tri set
                 for (whichSetVert=0; whichSetVert<numVerts; whichSetVert++) { // verts in set
                     vtxToAdd = inputTriangles[whichSet].vertices[whichSetVert]; // get vertex to add
                     normToAdd = inputTriangles[whichSet].normals[whichSetVert]; // get normal to add
-                    uvPosToAdd = inputTriangles[whichSet].uvs[whichSetVert]; // get texture pos to add
                     inputTriangles[whichSet].glVertices.push(vtxToAdd[0],vtxToAdd[1],vtxToAdd[2]); // put coords in set coord list
                     inputTriangles[whichSet].glNormals.push(normToAdd[0],normToAdd[1],normToAdd[2]); // put normal in set coord list
-                    inputTriangles[whichSet].uvPositions.push(uvPosToAdd[0],uvPosToAdd[1]); // put texture poses in set coord list
                     vec3.max(maxCorner,maxCorner,vtxToAdd); // update world bounding box corner maxima
                     vec3.min(minCorner,minCorner,vtxToAdd); // update world bounding box corner minima
                     vec3.add(inputTriangles[whichSet].center,inputTriangles[whichSet].center,vtxToAdd); // add to ctr sum
@@ -435,9 +594,6 @@ function loadModels() {
                 normalBuffers[whichSet] = gl.createBuffer(); // init empty webgl set normal component buffer
                 gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[whichSet]); // activate that buffer
                 gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(inputTriangles[whichSet].glNormals),gl.STATIC_DRAW); // data in
-                uvPosBuffers[whichSet] = gl.createBuffer(); // init empty webgl set texture coord buffer
-                gl.bindBuffer(gl.ARRAY_BUFFER,uvPosBuffers[whichSet]); // activate that buffer
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(inputTriangles[whichSet].uvPositions),gl.STATIC_DRAW); // data in
             
                 // set up the triangle index array, adjusting indices across sets
                 inputTriangles[whichSet].glTriangles = []; // flat index list for webgl
@@ -447,112 +603,12 @@ function loadModels() {
                     inputTriangles[whichSet].glTriangles.push(triToAdd[0],triToAdd[1],triToAdd[2]); // put indices in set list
                 } // end for triangles in set
 
-                // Create the texture object for this triangle set.
-                const texture = gl.createTexture();
-                const image = new Image();
-                // Make placeholder texture
-                gl.bindTexture(gl.TEXTURE_2D, texture);
-                const level=0, internalFormat=gl.RGBA, srcFormat=gl.RGBA, srcType=gl.UNSIGNED_BYTE;
-                gl.texImage2D(gl.TEXTURE_2D,level,internalFormat,1,1,0,srcFormat,srcType,new Uint8Array([0,0,0,255])); // black
-                // When correct texture loads.
-                image.onload = () => {
-                    gl.bindTexture(gl.TEXTURE_2D, texture);
-                    gl.texImage2D(gl.TEXTURE_2D,level,internalFormat,srcFormat,srcType,image);
-                    if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-                        gl.generateMipmap(gl.TEXTURE_2D);
-                    } else {
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                    }
-                };
-                image.crossOrigin = "Anonymous";
-                image.src = inputTriangles[whichSet].material.texture;
-                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-                inputTriangles[whichSet].textureObject = texture;
-
                 // send the triangle indices to webGL
                 triangleBuffers.push(gl.createBuffer()); // init empty triangle index buffer
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[whichSet]); // activate that buffer
                 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(inputTriangles[whichSet].glTriangles),gl.STATIC_DRAW); // data in
 
             } // end for each triangle set 
-        
-            inputEllipsoids = getJSONFile(INPUT_ELLIPSOIDS_URL,"ellipsoids"); // read in the ellipsoids
-
-            if (inputEllipsoids == String.null)
-                throw "Unable to load ellipsoids file!";
-            else {
-                
-                // init ellipsoid highlighting, translation and rotation; update bbox
-                var ellipsoid; // current ellipsoid
-                var ellipsoidModel; // current ellipsoid triangular model
-                var temp = vec3.create(); // an intermediate vec3
-                var minXYZ = vec3.create(), maxXYZ = vec3.create();  // min/max xyz from ellipsoid
-                numEllipsoids = inputEllipsoids.length; // remember how many ellipsoids
-                for (var whichEllipsoid=0; whichEllipsoid<numEllipsoids; whichEllipsoid++) {
-                    
-                    // set up various stats and transforms for this ellipsoid
-                    ellipsoid = inputEllipsoids[whichEllipsoid];
-                    ellipsoid.on = false; // ellipsoids begin without highlight
-                    ellipsoid.translation = vec3.fromValues(0,0,0); // ellipsoids begin without translation
-                    ellipsoid.xAxis = vec3.fromValues(1,0,0); // ellipsoid X axis
-                    ellipsoid.yAxis = vec3.fromValues(0,1,0); // ellipsoid Y axis 
-                    ellipsoid.center = vec3.fromValues(ellipsoid.x,ellipsoid.y,ellipsoid.z); // locate ellipsoid ctr
-                    vec3.set(minXYZ,ellipsoid.x-ellipsoid.a,ellipsoid.y-ellipsoid.b,ellipsoid.z-ellipsoid.c); 
-                    vec3.set(maxXYZ,ellipsoid.x+ellipsoid.a,ellipsoid.y+ellipsoid.b,ellipsoid.z+ellipsoid.c); 
-                    vec3.min(minCorner,minCorner,minXYZ); // update world bbox min corner
-                    vec3.max(maxCorner,maxCorner,maxXYZ); // update world bbox max corner
-
-                    // make the ellipsoid model
-                    ellipsoidModel = makeEllipsoid(ellipsoid,32);
-    
-                    // send the ellipsoid vertex coords and normals to webGL
-                    vertexBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid vertex coord buffer
-                    gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[vertexBuffers.length-1]); // activate that buffer
-                    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ellipsoidModel.vertices),gl.STATIC_DRAW); // data in
-                    normalBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid vertex normal buffer
-                    gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[normalBuffers.length-1]); // activate that buffer
-                    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ellipsoidModel.normals),gl.STATIC_DRAW); // data in
-                    uvPosBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid texture coord buffer
-                    gl.bindBuffer(gl.ARRAY_BUFFER,uvPosBuffers[uvPosBuffers.length-1]); // activate that buffer
-                    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ellipsoidModel.uvPositions),gl.STATIC_DRAW); // data in
-                    
-        
-                    triSetSizes.push(ellipsoidModel.triangles.length);
-
-                    // Create the texture object for this triangle set.
-                    const texture = gl.createTexture();
-                    const image = new Image();
-                    // Make placeholder texture
-                    gl.bindTexture(gl.TEXTURE_2D, texture);
-                    const level=0, internalFormat=gl.RGBA, srcFormat=gl.RGBA, srcType=gl.UNSIGNED_BYTE;
-                    gl.texImage2D(gl.TEXTURE_2D,level,internalFormat,1,1,0,srcFormat,srcType,new Uint8Array([0,0,0,255])); // black
-                    // When correct texture loads.
-                    image.onload = () => {
-                        gl.bindTexture(gl.TEXTURE_2D, texture);
-                        gl.texImage2D(gl.TEXTURE_2D,level,internalFormat,srcFormat,srcType,image);
-                        if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
-                            gl.generateMipmap(gl.TEXTURE_2D);
-                        } else {
-                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                        }
-                    };
-                    image.crossOrigin = "Anonymous";
-                    image.src = ellipsoid.texture;
-                    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-                    ellipsoid.textureObject = texture;
-    
-                    // send the triangle indices to webGL
-                    triangleBuffers.push(gl.createBuffer()); // init empty triangle index buffer
-                    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[triangleBuffers.length-1]); // activate that buffer
-                    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(ellipsoidModel.triangles),gl.STATIC_DRAW); // data in
-                } // end for each ellipsoid
-                
-                viewDelta = vec3.length(vec3.subtract(temp,maxCorner,minCorner)) / 100; // set global
-            } // end if ellipsoid file loaded
         } // end if triangle file loaded
     } // end try 
     
@@ -568,14 +624,12 @@ function setupShaders() {
     var vShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
-        attribute vec2 aUVPosition; // texture position
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
-        varying vec2 vUVPos; // interpolated uv for texture
 
         void main(void) {
             
@@ -587,9 +641,6 @@ function setupShaders() {
             // vertex normal (assume no non-uniform scale)
             vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
             vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z));
-
-            // texture position
-            vUVPos = aUVPosition;
         }
     `;
     
@@ -612,14 +663,10 @@ function setupShaders() {
         uniform vec3 uSpecular; // the specular reflectivity
         uniform float uShininess; // the specular exponent
         uniform float uAlpha; // the transparency
-
-        uniform int blendingMode;
-        uniform sampler2D uSampler; // the texture
         
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
-        varying vec2 vUVPos; // texture uv of fragment
             
         void main(void) {
             // ambient term
@@ -636,20 +683,8 @@ function setupShaders() {
             vec3 halfVec = normalize(light+eye);
             float highlight = pow(max(0.0,dot(normal,halfVec)),uShininess);
             vec3 specular = uSpecular*uLightSpecular*highlight; // specular term
-            
-            // combine to output color
-            vec3 colorOut = ambient + diffuse + specular; // no specular yet
-            vec4 lightingColor = vec4(colorOut, 1.0); 
-            
-            vec4 textureColor = texture2D(uSampler, vUVPos);
 
-            if (blendingMode == 0) {
-                gl_FragColor = textureColor;
-            } else if (blendingMode == 1) {
-                gl_FragColor = textureColor * lightingColor;
-            } else if (blendingMode == 2) {
-                gl_FragColor = lightingColor;
-            }
+            gl_FragColor = vec4(ambient + diffuse + specular, 1.0);
             gl_FragColor *= uAlpha;
         }
     `;
@@ -685,8 +720,6 @@ function setupShaders() {
                 gl.enableVertexAttribArray(vPosAttribLoc); // connect attrib to array
                 vNormAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexNormal"); // ptr to vertex normal attrib
                 gl.enableVertexAttribArray(vNormAttribLoc); // connect attrib to array
-                vUVPosAttribLoc = gl.getAttribLocation(shaderProgram, "aUVPosition"); // ptr to texture pos attrib
-                gl.enableVertexAttribArray(vUVPosAttribLoc);
                 
                 // locate vertex uniforms
                 mMatrixULoc = gl.getUniformLocation(shaderProgram, "umMatrix"); // ptr to mmat
@@ -703,9 +736,7 @@ function setupShaders() {
                 specularULoc = gl.getUniformLocation(shaderProgram, "uSpecular"); // ptr to specular
                 shininessULoc = gl.getUniformLocation(shaderProgram, "uShininess"); // ptr to shininess
                 alphaULoc = gl.getUniformLocation(shaderProgram, "uAlpha"); // ptr to alpha
-                samplerULoc = gl.getUniformLocation(shaderProgram, "uSampler"); // ptr to sampler
-                blendingModeULoc = gl.getUniformLocation(shaderProgram, "blendingMode"); // ptr to blending mode
-                
+                 
                 // pass global constants into fragment uniforms
                 gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
                 gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
@@ -726,6 +757,7 @@ function render() {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
     gl.depthMask(true);
     gl.disable(gl.BLEND);
+    moveGameObjects();
     drawModels(true);
     gl.depthMask(false);
     gl.enable(gl.BLEND);
@@ -777,27 +809,11 @@ function drawModels(opaque) {
     mat4.multiply(pvMatrix,pvMatrix,pMatrix); // projection
     mat4.multiply(pvMatrix,pvMatrix,vMatrix); // projection * view
 
-    if(floatAway) {
-        let i = 0;
-        inputTriangles.forEach((triangleSet) => {
-            const wobbleTime = floatTime * (1 + i/10);
-            const offset = vec3.fromValues(Math.sin((wobbleTime+1)/200+i)/6-Math.sin(wobbleTime/200+i)/6,(1 + i/10)/2000,0);
-            vec3.add(triangleSet.translation,triangleSet.translation,offset);
-            i++;
-        });
-        inputEllipsoids.forEach((ellipsoid) => {
-            const wobbleTime = floatTime * (1 + i/10);
-            const offset = vec3.fromValues(Math.sin((wobbleTime+1)/200+i)/6-Math.sin(wobbleTime/200+i)/6,(1 + i/10)/2000,0);
-            vec3.add(ellipsoid.translation,ellipsoid.translation,offset);
-            i++;
-        });
-        floatTime++;
-    }
-
     // render each triangle set
     var currSet; // the tri set and its material properties
     for (var whichTriSet=0; whichTriSet<numTriangleSets; whichTriSet++) {
         currSet = inputTriangles[whichTriSet];
+        
         if(opaque !== (currSet.material.alpha >= 1))
             continue;
         
@@ -814,73 +830,24 @@ function drawModels(opaque) {
         gl.uniform1f(shininessULoc,currSet.material.n); // pass in the specular exponent
         gl.uniform1f(alphaULoc,currSet.material.alpha); // pass in the transparency
         
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, currSet.textureObject);
-        gl.uniform1i(samplerULoc,0); // pass in the sampler
-
-        gl.uniform1i(blendingModeULoc,blendingMode); // pass in the blending mode
-        
         // vertex buffer: activate and feed into vertex shader
         gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[whichTriSet]); // activate
         gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed
         gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[whichTriSet]); // activate
         gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed
-        gl.bindBuffer(gl.ARRAY_BUFFER,uvPosBuffers[whichTriSet]); // activate
-        gl.vertexAttribPointer(vUVPosAttribLoc,2,gl.FLOAT,false,0,0); // feed
 
         // triangle buffer: activate and render
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[whichTriSet]); // activate
         gl.drawElements(gl.TRIANGLES,3*triSetSizes[whichTriSet],gl.UNSIGNED_SHORT,0); // render
-        
     } // end for each triangle set
-    
-    // render each ellipsoid
-    var ellipsoid, instanceTransform = mat4.create(); // the current ellipsoid and material
-    
-    for (var whichEllipsoid=0; whichEllipsoid<numEllipsoids; whichEllipsoid++) {
-        ellipsoid = inputEllipsoids[whichEllipsoid];
-        if(opaque !== (ellipsoid.alpha >= 1))
-            continue;
-        
-        // define model transform, premult with pvmMatrix, feed to vertex shader
-        makeModelTransform(ellipsoid);
-        pvmMatrix = mat4.multiply(pvmMatrix,pvMatrix,mMatrix); // premultiply with pv matrix
-        gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix); // pass in model matrix
-        gl.uniformMatrix4fv(pvmMatrixULoc, false, pvmMatrix); // pass in project view model matrix
-
-        // reflectivity: feed to the fragment shader
-        gl.uniform3fv(ambientULoc,ellipsoid.ambient); // pass in the ambient reflectivity
-        gl.uniform3fv(diffuseULoc,ellipsoid.diffuse); // pass in the diffuse reflectivity
-        gl.uniform3fv(specularULoc,ellipsoid.specular); // pass in the specular reflectivity
-        gl.uniform1f(shininessULoc,ellipsoid.n); // pass in the specular exponent
-        gl.uniform1f(alphaULoc,ellipsoid.alpha); // pass in the transparency
-        
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, ellipsoid.textureObject);
-        gl.uniform1i(samplerULoc,0); // pass in the sampler
-
-        gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[numTriangleSets+whichEllipsoid]); // activate vertex buffer
-        gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed vertex buffer to shader
-        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[numTriangleSets+whichEllipsoid]); // activate normal buffer
-        gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed normal buffer to shader
-        gl.bindBuffer(gl.ARRAY_BUFFER,uvPosBuffers[numTriangleSets+whichEllipsoid]); // activate
-        gl.vertexAttribPointer(vUVPosAttribLoc,2,gl.FLOAT,false,0,0); // feed
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[numTriangleSets+whichEllipsoid]); // activate tri buffer
-        
-        // draw a transformed instance of the ellipsoid
-        gl.drawElements(gl.TRIANGLES,triSetSizes[numTriangleSets+whichEllipsoid],gl.UNSIGNED_SHORT,0); // render
-    } // end for each ellipsoid
 } // end render model
-
-function isPowerOf2(value) {
-    return (value&(value-1))===0;
-}
 
 /* MAIN -- HERE is where execution begins after window load */
 
 function main() {
   
   setupWebGL(); // set up the webGL environment
+  makeGameObjects();
   loadModels(); // load in the models from tri file
   setupShaders(); // setup the webGL shaders
   render(); // draw the triangles using webGL
